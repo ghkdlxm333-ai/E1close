@@ -1,16 +1,12 @@
 import streamlit as st
 import pandas as pd
-import re
 
-# 페이지 설정
 st.set_page_config(page_title="Sales vs ERP Recon Tool", layout="wide")
+st.title("📊 [일일출고] 시트 전용 검증 시스템")
 
-st.title("📊 통합 매출 마감 검증 시스템")
-st.info("비교할 두 파일(Sales Report, Book1)을 한꺼번에 업로드하세요. 'Order #'에서 숫자만 있는 데이터만 자동 선별합니다.")
-
-# 1. 통합 파일 업로드 (accept_multiple_files=True)
+# 1. 통합 파일 업로드
 uploaded_files = st.file_uploader(
-    "파일을 한꺼번에 드래그앤드롭 하세요 (Sales Report, Book1)", 
+    "Sales Report와 Book1 파일을 한꺼번에 업로드하세요", 
     type=['xlsx', 'csv'], 
     accept_multiple_files=True
 )
@@ -18,75 +14,70 @@ uploaded_files = st.file_uploader(
 if len(uploaded_files) == 2:
     df_sales, df_erp = None, None
     
-    # 2. 파일명 키워드로 자동 분류
     for file in uploaded_files:
-        fname = file.name.lower()
-        if "book" in fname:
+        # Book1 파일 판별
+        if "book" in file.name.lower():
             df_erp = pd.read_excel(file) if file.name.endswith('xlsx') else pd.read_csv(file)
         else:
-            # 기본적으로 book이 아니면 sales report로 간주
-            df_sales = pd.read_excel(file) if file.name.endswith('xlsx') else pd.read_csv(file)
+            # Sales Report 파일일 경우 '일일출고' 시트만 로드
+            if file.name.endswith('xlsx'):
+                try:
+                    # [핵심 수정] 오직 '일일출고' 시트만 읽어옴
+                    df_sales = pd.read_excel(file, sheet_name='일일출고')
+                    st.success(f"✅ {file.name}에서 '일일출고' 시트를 성공적으로 로드했습니다.")
+                except ValueError:
+                    st.error(f"❌ {file.name} 파일에 '일일출고' 시트가 없습니다. 시트명을 확인해주세요.")
+            else:
+                df_sales = pd.read_csv(file)
 
     if df_sales is not None and df_erp is not None:
-        # --- [데이터 전처리: Sales Report] ---
-        
-        # J열(Order #)이 비어있는 행 제거
-        df_sales = df_sales.dropna(subset=['Order #'])
-        
-        # Order # 컬럼을 문자열로 변환 후 공백 제거
-        df_sales['Order #'] = df_sales['Order #'].astype(str).str.strip()
-        
-        # 정규표현식을 사용하여 '오직 숫자'로만 구성된 데이터만 필터링 (숫자 외 문자 포함 시 제외)
-        # 예: '220549' (유지), '220549-1' (제외), 'None' (제외)
-        df_sales = df_sales[df_sales['Order #'].str.match(r'^\d+$')]
-        
-        # --- [데이터 전처리: ERP (Book1)] ---
+        # --- 전처리: Sales Report (Order # 컬럼 기준 숫자만) ---
+        # 'Order #' 컬럼이 존재하는지 확인
+        if 'Order #' in df_sales.columns:
+            df_sales = df_sales.dropna(subset=['Order #'])
+            df_sales['Order #'] = df_sales['Order #'].astype(str).str.strip()
+            # 숫자만 있는 데이터만 필터링 (텍스트, 빈값 제외)
+            df_sales = df_sales[df_sales['Order #'].str.match(r'^\d+$')]
+            
+            # 수량 및 금액 합산
+            sales_final = df_sales.groupby('Order #').agg({
+                '수량': 'sum', 
+                'Total Amount': 'sum'
+            }).reset_index()
+        else:
+            st.error("❌ Sales Report에 'Order #' 컬럼이 없습니다.")
+            st.stop()
+
+        # --- 전처리: ERP (Order Number 기준) ---
         df_erp['Order Number'] = df_erp['Order Number'].astype(str).str.strip()
-        # ERP도 안전하게 숫자 패턴만 비교 대상으로 삼음
-        df_erp = df_erp[df_erp['Order Number'].str.match(r'^\d+$')]
-
-        # 3. 그룹화 및 합산
-        sales_final = df_sales.groupby('Order #').agg({
-            '수량': 'sum', 
-            'Total Amount': 'sum'
-        }).reset_index()
-
         erp_final = df_erp.groupby('Order Number').agg({
             'Quantity': 'sum', 
             'Extended Amount': 'sum'
         }).reset_index()
 
-        # 4. 데이터 병합 및 오차 계산
+        # --- 데이터 병합 및 비교 ---
         merged = pd.merge(sales_final, erp_final, left_on='Order #', right_on='Order Number', how='outer')
-        
-        merged['수량_차이'] = merged['수량'].fillna(0) - merged['Quantity'].fillna(0)
-        merged['금액_차이'] = merged['Total Amount'].fillna(0) - merged['Extended Amount'].fillna(0)
+        merged['수량차이'] = merged['수량'].fillna(0) - merged['Quantity'].fillna(0)
+        merged['금액차이'] = merged['Total Amount'].fillna(0) - merged['Extended Amount'].fillna(0)
 
-        # 5. 결과 시각화
-        mismatch = merged[(merged['수량_차이'] != 0) | (merged['금액_차이'] != 0)].copy()
+        # 결과 필터링
+        mismatch = merged[(merged['수량차이'] != 0) | (merged['금액차이'] != 0)].copy()
 
-        st.subheader("✅ 필터링 및 분석 결과")
+        # 결과 화면
+        st.subheader("📝 비교 결과 요약 (대상: 일일출고 시트)")
         c1, c2, c3 = st.columns(3)
-        c1.metric("유효 숫자 오더 수 (Sales)", len(sales_final))
+        c1.metric("Sales 오더 수", len(sales_final))
         c2.metric("ERP 오더 수", len(erp_final))
         c3.metric("불일치 건수", len(mismatch), delta_color="inverse")
 
         if not mismatch.empty:
-            st.error(f"🚩 {len(mismatch)}건의 차이가 발견되었습니다.")
-            
-            # 보기 편하게 컬럼 정리
-            display_df = mismatch[['Order #', 'Order Number', '수량', 'Quantity', '수량_차이', 'Total Amount', 'Extended Amount', '금액_차이']]
-            display_df.columns = ['Sales_오더', 'ERP_오더', 'Sales_수량', 'ERP_수량', '수량차이', 'Sales_금액', 'ERP_금액', '금액차이']
-            
-            st.dataframe(display_df.style.format(precision=0).background_gradient(cmap='Reds', subset=['수량차이', '금액차이']))
-            
-            csv = display_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 불일치 리스트 다운로드", csv, "mismatch_report.csv", "text/csv")
+            st.warning("⚠️ 데이터 불일치가 발견되었습니다.")
+            # 가독성 정리
+            mismatch = mismatch[['Order #', '수량', 'Quantity', '수량차이', 'Total Amount', 'Extended Amount', '금액차이']]
+            mismatch.columns = ['오더번호', 'Sales수량', 'ERP수량', '수량차이', 'Sales금액', 'ERP금액', '금액차이']
+            st.dataframe(mismatch.style.format(precision=0).background_gradient(cmap='Reds', subset=['수량차이', '금액차이']))
         else:
-            st.success("🎉 숫자 코드가 입력된 모든 오더가 ERP 데이터와 완벽히 일치합니다!")
-
-    else:
-        st.warning("⚠️ 파일 분류에 실패했습니다. 파일명에 'Book' 키워드가 포함되어 있는지 확인해주세요.")
+            st.success("🎉 '일일출고' 시트의 모든 오더가 ERP 데이터와 정확히 일치합니다!")
 
 elif len(uploaded_files) > 0:
-    st.info(f"현재 {len(uploaded_files)}개의 파일이 올라갔습니다. 비교를 위해 총 2개의 파일이 필요합니다.")
+    st.info("비교를 위해 나머지 파일 하나를 더 업로드해주세요.")
