@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # 페이지 설정
-st.set_page_config(page_title="Sales vs ERP Recon Tool", page_icon="🗓" , layout="wide")
+st.set_page_config(page_title="Sales vs ERP Recon Tool", page_icon="🗓️" , layout="wide")
 
 st.title("📊 매출 마감 데이터 최종 검증 툴")
 st.info("💡 전체 요약 결과와 함께, 수량 차이가 있는 '특정 품목'만 상세 탭에서 바로 확인하세요.")
