@@ -6,7 +6,7 @@ import numpy as np
 st.set_page_config(page_title="Sales vs ERP Recon Tool", layout="wide")
 
 st.title("📊 매출 마감 데이터 최종 검증 툴")
-st.info("💡 수량 불일치 오더 중에서도 '실제 차이가 있는 품목'만 골라내어 보여줍니다.")
+st.info("💡 전체 요약 결과와 함께, 수량 차이가 있는 '특정 품목'만 상세 탭에서 바로 확인하세요.")
 
 # 1. 파일 업로드 섹션
 uploaded_files = st.file_uploader(
@@ -35,29 +35,28 @@ if len(uploaded_files) == 2:
         # --- [Sales Report 전처리] ---
         df_sales = df_sales.dropna(subset=['Order #', '수량'])
         df_sales['Order #'] = df_sales['Order #'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        df_sales = df_sales[df_sales['Order #'].str.match(r'^\d+$')]
         
-        # 단가/수량 숫자 변환 및 결측치 0 처리
         df_sales['단가'] = pd.to_numeric(df_sales['단가'], errors='coerce').fillna(0)
         df_sales['수량'] = pd.to_numeric(df_sales['수량'], errors='coerce').fillna(0)
         
-        # 금액 계산 (소수점 4자리 절사 적용)
         df_sales['단가'] = np.floor(df_sales['단가'] * 10000) / 10000
         df_sales['Total Amount'] = df_sales['단가'] * df_sales['수량']
 
-        # 품목별 그룹화
+        # [상세용] 품목별 그룹화
         sales_detail = df_sales.groupby(['Order #', '제품코드', '제품명']).agg({'수량': 'sum'}).reset_index()
-        # 오더별 요약
+        # [요약용] 오더별 그룹화
         sales_summary = df_sales.groupby('Order #').agg({'수량': 'sum', 'Total Amount': 'sum'}).reset_index()
 
-        # --- [ERP(Book) 데이터 전처리] ---
+        # --- [ERP(Book) 전처리] ---
         df_erp = df_erp.dropna(subset=['Order Number'])
         df_erp['Order Number'] = df_erp['Order Number'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
         df_erp['Quantity'] = pd.to_numeric(df_erp['Quantity'], errors='coerce').fillna(0)
         df_erp['Extended Amount'] = pd.to_numeric(df_erp['Extended Amount'], errors='coerce').fillna(0)
         
-        # 품목별 그룹화 (ERP의 2nd Item Number 기준)
+        # [상세용] 품목별 그룹화 (ME코드 기준)
         erp_detail = df_erp.groupby(['Order Number', '2nd Item Number']).agg({'Quantity': 'sum'}).reset_index()
-        # 오더별 요약
+        # [요약용] 오더별 그룹화
         erp_summary = df_erp.groupby('Order Number').agg({'Quantity': 'sum', 'Extended Amount': 'sum'}).reset_index()
 
         # --- [데이터 병합 및 비교] ---
@@ -73,53 +72,60 @@ if len(uploaded_files) == 2:
 
         merged_summary['비교결과'] = merged_summary.apply(check_status, axis=1)
 
-        # --- [화면 표시 1: 요약 메트릭] ---
+        # --- [화면 표시 1: 기존 상단 요약창 유지] ---
         st.subheader("✅ 검증 요약")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("총 오더 수", len(merged_summary))
         c2.metric("완전 일치", len(merged_summary[merged_summary['비교결과']=="✅ 완전 일치"]))
-        c3.metric("단가 미세오차(허용)", len(merged_summary[merged_summary['비교결과']=="⚠️ 단가 미세오차(정상)"]))
-        c4.metric("실제 불일치", len(merged_summary[merged_summary['비교결과'].str.contains("❌")]), delta_color="inverse")
+        c3.metric("단가 미세오차(정상)", len(merged_summary[merged_summary['비교결과']=="⚠️ 단가 미세오차(정상)"]))
+        c4.metric("불일치 오더", len(merged_summary[merged_summary['비교결과'].str.contains("❌")]), delta_color="inverse")
 
-        # --- [화면 표시 2: 전체 결과 테이블] ---
+        # --- [화면 표시 2: 불일치 오더 요약 리스트 유지] ---
         mismatch = merged_summary[merged_summary['비교결과'].str.contains("❌")].copy()
         if not mismatch.empty:
-            st.error(f"🚩 불일치 오더가 {len(mismatch)}건 발견되었습니다.")
+            st.error(f"🚩 확인 필요 오더: {len(mismatch)}건")
             st.dataframe(mismatch[['Order #', '수량', 'Quantity', '수량차이', 'Total Amount', 'Extended Amount', '비교결과']], use_container_width=True)
 
-        # --- [화면 표시 3: 상세 품목 확인 (차이 나는 품목만!)] ---
-        if not mismatch.empty:
-            with st.expander("🔍 수량차이 발생 품목 상세 확인 (틀린 것만 보기)"):
-                # 상세 데이터 병합
-                detail_comp = pd.merge(
-                    sales_detail, 
-                    erp_detail, 
-                    left_on=['Order #', '제품코드'], 
-                    right_on=['Order Number', '2nd Item Number'], 
-                    how='outer'
-                ).fillna(0)
+        # --- [화면 표시 3: 수량 차이 '품목'만 보여주는 상세 탭] ---
+        # 1. 상세 레벨 병합 (Order + Product)
+        detail_comp = pd.merge(
+            sales_detail, 
+            erp_detail, 
+            left_on=['Order #', '제품코드'], 
+            right_on=['Order Number', '2nd Item Number'], 
+            how='outer'
+        ).fillna(0)
+        
+        # 2. 수량 차이가 실제로 발생한 품목만 필터링
+        detail_comp['수량차이'] = detail_comp['수량'] - detail_comp['Quantity']
+        item_mismatch = detail_comp[detail_comp['수량차이'] != 0].copy()
+
+        if not item_mismatch.empty:
+            with st.expander("🔍 [상세] 수량 차이 발생 품목 리스트 (틀린 ME코드만 보기)"):
+                # 열 이름 정리 및 출력
+                # Order Number가 0인 경우(ERP에만 있는 경우)를 위해 정규화
+                item_mismatch['오더넘버'] = item_mismatch['Order #'].where(item_mismatch['Order #'] != 0, item_mismatch['Order Number'])
+                item_mismatch['ME코드'] = item_mismatch['제품코드'].where(item_mismatch['제품코드'] != 0, item_mismatch['2nd Item Number'])
                 
-                # 수량 차이가 있는 행(품목)만 필터링
-                detail_comp['수량차이'] = detail_comp['수량'] - detail_comp['Quantity']
-                item_mismatch = detail_comp[detail_comp['수량차이'] != 0].copy()
+                display_table = item_mismatch[['오더넘버', 'ME코드', '제품명', 'Quantity', '수량', '수량차이']]
+                display_table.columns = ['오더넘버', 'ME코드', '상품명', 'E1수량(ERP)', '세일즈수량', '수량차이']
                 
-                if not item_mismatch.empty:
-                    # 열 순서: 오더넘버, ME코드, 상품명, E1수량, 세일즈수량, 수량차이
-                    display_table = item_mismatch[['Order #', '제품코드', '제품명', 'Quantity', '수량', '수량차이']]
-                    display_table.columns = ['오더넘버', 'ME코드', '상품명', 'E1수량', '세일즈수량', '수량차이']
-                    
-                    st.dataframe(display_table.style.format(precision=0), use_container_width=True)
-                else:
-                    st.write("품목별 수량 차이는 없으나, 전체 금액 혹은 오더 합계에서 차이가 발생했습니다.")
+                # 가독성을 위해 수량차이 순으로 정렬
+                display_table = display_table.sort_values(by='수량차이', ascending=False)
+                
+                st.dataframe(display_table.style.format(precision=0), use_container_width=True)
+                
+                csv_detail = display_table.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 수량 불일치 상세 내역 다운로드", csv_detail, "item_mismatch_detail.csv")
 
         # --- [기타 오차 확인 창] ---
         minor_errors = merged_summary[merged_summary['비교결과'] == "⚠️ 단가 미세오차(정상)"]
         if not minor_errors.empty:
-            with st.expander("🔍 단가 소수점 오차 오더 확인 (정상)"):
+            with st.expander("🔍 단가 소수점 미세 오차 오더 확인"):
                 st.dataframe(minor_errors[['Order #', 'Total Amount', 'Extended Amount', '금액차이_실제']], use_container_width=True)
 
         if mismatch.empty:
-            st.success("🎉 모든 데이터가 정상 범위 내에서 일치합니다!")
+            st.success("🎉 모든 데이터가 일치합니다!")
 
 elif len(uploaded_files) > 0:
-    st.warning("파일 2개를 모두 업로드 해주세요.")
+    st.warning("Sales Report와 Book1 파일 2개를 모두 업로드 해주세요.")
