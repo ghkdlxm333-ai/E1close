@@ -5,8 +5,8 @@ import numpy as np
 # 페이지 설정
 st.set_page_config(page_title="Sales vs ERP Recon Tool", layout="wide")
 
-st.title("📊 매출 마감 데이터 최종 검증 툴 (단가 None=0원 처리)")
-st.info("💡 세일즈 리포트 단가가 비어있거나(None) 문자인 경우 0원으로 자동 계산합니다.")
+st.title("📊 매출 마감 데이터 최종 검증 툴 (자동화)")
+st.info("💡 E1에서 다운받은  Sales Order Inquiry 엑셀 데이터와 Sales report 엑셀 데이터를 업로드하시오")
 
 # 1. 파일 업로드 섹션
 uploaded_files = st.file_uploader(
